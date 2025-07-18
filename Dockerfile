@@ -7,6 +7,9 @@ WORKDIR /app
 # Copy the project files into the container
 COPY . .
 
+# Install git for package installation (required for hatch)
+RUN apt-get update && apt-get install -y git
+
 # Install dependencies
 RUN pip install --no-cache-dir ".[all]" fastapi uvicorn "fast-plaid @ git+https://github.com/Lightning-AI/fast-plaid.git"
 
