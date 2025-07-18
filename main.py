@@ -6,78 +6,92 @@ import torch
 from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
+from transformers.utils.import_utils import is_flash_attn_2_available
 
-from colpali_engine.models.paligemma.colpali import ColPaliForConditionalGeneration
-from colpali_engine.utils.processing_utils import get_paligemma_preprocessor
+from colpali_engine.models import ColQwen2, ColQwen2Processor
 
-# Placeholder for model loading
-# In a real application, you would load your trained model here
-# For example:
-# model_name = "google/paligemma-3b-pt-224"
-# model = ColPaliForConditionalGeneration.from_pretrained(model_name)
-# processor = get_paligemma_preprocessor(model_name)
-
-# For now, let's use a mock model and processor
-class MockModel:
-    def to(self, device):
-        return self
-
-    def encode_image(self, pixel_values, **kwargs):
-        return torch.randn(len(pixel_values), 1024)
-
-    def encode_text(self, input_ids, attention_mask, **kwargs):
-        return torch.randn(len(input_ids), 1024)
-
-class MockProcessor:
-    def __call__(self, text=None, images=None, return_tensors="pt", **kwargs):
-        if text:
-            return {"input_ids": torch.randint(0, 1000, (len(text), 10)), "attention_mask": torch.ones(len(text), 10)}
-        if images:
-            return {"pixel_values": torch.randn(len(images), 3, 224, 224)}
-
-
-model = MockModel()
-processor = MockProcessor()
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model.to(device)
+# Load the model and processor
+model_name = "vidore/colqwen2-v1.0"
+model = ColQwen2.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
+    device_map="cuda:0" if torch.cuda.is_available() else "cpu",
+    attn_implementation="flash_attention_2" if is_flash_attn_2_available() else None,
+).eval()
+processor = ColQwen2Processor.from_pretrained(model_name)
+device = model.device
 
 app = FastAPI()
 
-class TextRequest(BaseModel):
-    queries: List[str]
-
 class ImageRequest(BaseModel):
+    image: str  # Base64 encoded image
+
+class QueryRequest(BaseModel):
+    query: str
+
+class ImagesRequest(BaseModel):
     images: List[str]  # Base64 encoded images
 
+class QueriesRequest(BaseModel):
+    queries: List[str]
+
+class ScoreRequest(BaseModel):
+    image_embeddings: List[List[List[float]]]
+    query_embeddings: List[List[List[float]]]
+
+class EmbeddingResponse(BaseModel):
+    embedding: List[List[float]]
+
 class EmbeddingsResponse(BaseModel):
-    embeddings: List[List[float]]
+    embeddings: List[List[List[float]]]
 
-@app.post("/embed/text", response_model=EmbeddingsResponse)
-async def embed_text(request: TextRequest):
+class ScoresResponse(BaseModel):
+    scores: List[List[float]]
+
+def decode_image(img_b64: str) -> Image.Image:
     try:
-        inputs = processor(text=request.queries, return_tensors="pt").to(device)
-        with torch.no_grad():
-            embeddings = model.encode_text(**inputs).cpu().tolist()
-        return EmbeddingsResponse(embeddings=embeddings)
+        img_bytes = base64.b64decode(img_b64)
+        return Image.open(BytesIO(img_bytes)).convert("RGB")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Invalid base64 image: {e}")
 
-@app.post("/embed/image", response_model=EmbeddingsResponse)
-async def embed_image(request: ImageRequest):
-    images = []
-    for img_b64 in request.images:
-        try:
-            img_bytes = base64.b64decode(img_b64)
-            img = Image.open(BytesIO(img_bytes)).convert("RGB")
-            images.append(img)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid base64 image: {e}")
+@app.post("/process/image", response_model=EmbeddingResponse)
+async def process_image(request: ImageRequest):
+    image = decode_image(request.image)
+    batch_images = processor.process_images([image]).to(device)
+    with torch.no_grad():
+        image_embedding = model(**batch_images).cpu().tolist()
+    return EmbeddingResponse(embedding=image_embedding)
 
+@app.post("/process/query", response_model=EmbeddingResponse)
+async def process_query(request: QueryRequest):
+    batch_queries = processor.process_queries([request.query]).to(device)
+    with torch.no_grad():
+        query_embedding = model(**batch_queries).cpu().tolist()
+    return EmbeddingResponse(embedding=query_embedding)
+
+@app.post("/process/images", response_model=EmbeddingsResponse)
+async def process_images(request: ImagesRequest):
+    images = [decode_image(img_b64) for img_b64 in request.images]
+    batch_images = processor.process_images(images).to(device)
+    with torch.no_grad():
+        image_embeddings = model(**batch_images).cpu().tolist()
+    return EmbeddingsResponse(embeddings=image_embeddings)
+
+@app.post("/process/queries", response_model=EmbeddingsResponse)
+async def process_queries(request: QueriesRequest):
+    batch_queries = processor.process_queries(request.queries).to(device)
+    with torch.no_grad():
+        query_embeddings = model(**batch_queries).cpu().tolist()
+    return EmbeddingsResponse(embeddings=query_embeddings)
+
+@app.post("/process/score_multi_vector", response_model=ScoresResponse)
+async def score_multi_vector(request: ScoreRequest):
     try:
-        inputs = processor(images=images, return_tensors="pt").to(device)
-        with torch.no_grad():
-            embeddings = model.encode_image(**inputs).cpu().tolist()
-        return EmbeddingsResponse(embeddings=embeddings)
+        image_embeddings = torch.tensor(request.image_embeddings, device=device)
+        query_embeddings = torch.tensor(request.query_embeddings, device=device)
+        scores = processor.score_multi_vector(query_embeddings, image_embeddings).cpu().tolist()
+        return ScoresResponse(scores=scores)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -8,7 +8,7 @@ WORKDIR /app
 COPY . .
 
 # Install dependencies
-RUN pip install --no-cache-dir ".[all]" fastapi uvicorn
+RUN pip install --no-cache-dir ".[all]" fastapi uvicorn "fast-plaid @ git+https://github.com/Lightning-AI/fast-plaid.git"
 
 # Command to run the application
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
