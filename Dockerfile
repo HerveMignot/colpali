@@ -5,13 +5,13 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # Copy the project files into the container
-COPY . .
+COPY /api .
 
 # Install git for package installation (required for hatch)
-RUN apt-get update && apt-get install -y git
+# RUN apt-get update && apt-get install -y git
 
 # Install dependencies
-RUN pip install --no-cache-dir ".[all]" fastapi uvicorn "fast-plaid @ git+https://github.com/Lightning-AI/fast-plaid.git"
+RUN pip install --no-cache-dir fastapi uvicorn colpali-engine
 
 # Command to run the application
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
