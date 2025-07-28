@@ -2,14 +2,25 @@ apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
   name: colpali-engine
+  labels:
+    cloud.googleapis.com/location: europe-west1
 spec:
   template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/maxScale: '1'
+        run.googleapis.com/cpu-throttling: 'false'
+        run.googleapis.com/gpu-zonal-redundancy-disabled: 'true'
     spec:
       containers:
-        - image: gcr.io/your-project-id/colpali-engine
+        - image: europe-west1-docker.pkg.dev/eq-4dev-tests/colpali-server/colpali-engine
           ports:
             - containerPort: 8080
           resources:
             limits:
-              cpu: "1"
-              memory: "8Gi"
+              cpu: "4"
+              memory: "16Gi"
+              nvidia.com/gpu: "1"
+      nodeSelector:
+        run.googleapis.com/accelerator: nvidia-l4
+
