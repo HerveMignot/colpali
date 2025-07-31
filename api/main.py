@@ -1,4 +1,5 @@
 import base64
+import os
 from io import BytesIO
 from typing import List
 
@@ -10,15 +11,25 @@ from transformers.utils.import_utils import is_flash_attn_2_available
 
 from colpali_engine.models import ColQwen2, ColQwen2Processor
 
+hf_local_cache_path = os.environ.get('MODEL_CACHE_PATH', None)
+if hf_local_cache_path is not None:
+    print(f'Loading model from cache: {hf_local_cache_path}')
+
 # Load the model and processor
 model_name = "vidore/colqwen2-v1.0"
+
 model = ColQwen2.from_pretrained(
     model_name,
+    local_files_only=(hf_local_cache_path is not None),
+    cache_dir=hf_local_cache_path,
     torch_dtype=torch.bfloat16,
     device_map="cuda:0" if torch.cuda.is_available() else "cpu",
     attn_implementation="flash_attention_2" if is_flash_attn_2_available() else None,
 ).eval()
-processor = ColQwen2Processor.from_pretrained(model_name)
+processor = ColQwen2Processor.from_pretrained(
+    model_name,
+    local_files_only=(hf_local_cache_path is not None),
+    cache_dir=hf_local_cache_path)
 device = model.device
 
 app = FastAPI()
@@ -61,14 +72,14 @@ async def process_image(request: ImageRequest):
     batch_images = processor.process_images([image]).to(device)
     with torch.no_grad():
         image_embedding = model(**batch_images).cpu().tolist()
-    return EmbeddingResponse(embedding=image_embedding)
+    return EmbeddingResponse(embedding=image_embedding[0])
 
 @app.post("/process/query", response_model=EmbeddingResponse)
 async def process_query(request: QueryRequest):
     batch_queries = processor.process_queries([request.query]).to(device)
     with torch.no_grad():
         query_embedding = model(**batch_queries).cpu().tolist()
-    return EmbeddingResponse(embedding=query_embedding)
+    return EmbeddingResponse(embedding=query_embedding[0])
 
 @app.post("/process/images", response_model=EmbeddingsResponse)
 async def process_images(request: ImagesRequest):
@@ -94,6 +105,10 @@ async def score_multi_vector(request: ScoreRequest):
         return ScoresResponse(scores=scores)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/check/device")
+async def check_device():
+    return {"device": str(device)}
 
 @app.get("/")
 def read_root():
